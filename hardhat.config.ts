@@ -51,9 +51,9 @@ export default {
   networks: {
     hardhat: {
       forking: {
-        url: "https://api.securerpc.com/v1",
+        // url: "https://api.securerpc.com/v1",
         // blockNumber: 17465652
-        // url: "https://eth-mainnet.g.alchemy.com/v2/AqlUdmgjvOARQTmzfoQZO-Hi9nsnO_-Q",
+        url: "https://eth-mainnet.g.alchemy.com/v2/AqlUdmgjvOARQTmzfoQZO-Hi9nsnO_-Q",
       },
     },
   },
