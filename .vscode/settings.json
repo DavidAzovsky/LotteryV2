@@ -1,0 +1,13 @@
+{
+ "solidity.compileUsingRemoteVersion": "v0.8.19+commit.7dd6d404",
+ "solidity.defaultCompiler": "remote",
+ "solidity.compilerOptimization": 5000,
+ "diffEditor.wordWrap": "inherit",
+ "editor.wrappingIndent": "indent",
+ "editor.wordWrap": "on",
+ "interactiveSession.editor.wordWrap": "on",
+ "solidity.packageDefaultDependenciesDirectory": "",
+ "editor.suggest.showModules": true,
+ "solidity.nodemodulespackage": "solc",
+ "solidity.solhintRules": {}
+}

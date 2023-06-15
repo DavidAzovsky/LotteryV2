@@ -1,0 +1,8 @@
+{
+ "recommendations": [
+  "sevillal.vscode-solidity",
+  "juanblanco.solidity",
+  "kodebox.solidity-language-server",
+  "idrabenia.solidity-solhint"
+ ]
+}
