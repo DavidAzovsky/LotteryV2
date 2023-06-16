@@ -42,7 +42,6 @@ contract LotteryV1 is
         uint256 ticketPrice;
         address owner;
         address borrower;
-        uint256 wTicketId;
     }
 
     //Ticket NFT holders
@@ -88,15 +87,12 @@ contract LotteryV1 is
     event UpdateWinners(uint256, address[]);
 
     function initialize(
-        address _ticket,
-        address _wTicket,
         bytes32 _merkleRoot,
         uint64 _subscriptionId,
         address _vrfCoordinator,
         bytes32 _keyHash,
         uint256 _fee
     ) external initializer {
-        // __ERC721_init("Lottery Ticket", "Lottery");
         __Ownable_init();
         __UUPSUpgradeable_init();
         __VRFConsumerBaseV2Upgradeable_init(_vrfCoordinator);
@@ -104,96 +100,38 @@ contract LotteryV1 is
         keyHash = _keyHash;
         feeChainlink = _fee;
 
-        ticket = LotteryTicket(_ticket);
-        wTicket = LotteryWrappedTicket(_wTicket);
-
         subscriptionId = _subscriptionId;
         COORDINATOR = VRFCoordinatorV2Interface(_vrfCoordinator);
         lotteryState = LOTTERY_STATE.CLOSE;
     }
 
-    function _authorizeUpgrade(address) internal override onlyOwner {}
-
-    function startLottery() external onlyOwner {
-        require(lotteryState == LOTTERY_STATE.CLOSE, "Cannot start lottery");
-
-        // Update lotteryInfo
-        lotteryState = LOTTERY_STATE.OPEN;
-        lotteryId++;
-        startTime = block.timestamp;
-    }
-
-    // function depositorState(
-    //     address user
-    // ) public view returns (USER_STATE state, uint256 id) {
-    //     uint i;
-    //     for (i = 0; i < holderCount; i++) {
-    //         if (ticketsInfo[i].owner == user) {
-    //             state = USER_STATE.OWNER;
-    //             id = i;
-    //             break;
-    //         }
-    //         if (ticketsInfo[i].borrower == user) {
-    //             state = USER_STATE.BORROWER;
-    //             id = i;
-    //             break;
-    //         }
-    //     }
-    //     if (i >= holderCount) {
-    //         state = USER_STATE.NEW_DEPOSITOR;
-    //         id = holderCount;
-    //     }
-
-    //     //check if whitelisted user
-    //     uint j;
-    //     for (j = 0; j < whiteListedUsers.length; j++)
-    //         if (whiteListedUsers[j] == user) break;
-    //     if (j < whiteListedUsers.length) {
-    //         state = USER_STATE.WHITELISTED;
-    //         id = uint256.max;
-    //     }
-    // }
-
-    function depositorState(
-        address user
-    ) public view returns (USER_STATE state) {
-        if (lotteryInfo[lotteryId].whiteListed[user]) {
-            state = USER_STATE.WHITELISTED;
-        } else if (ticket.ownerOf(ticket.ticketId(user)) != address(0)) {
-            state = USER_STATE.OWNER;
-        } else if (wTicket.ownerOf(wTicket.wTicketId(user)) != address(0)) {
-            state = USER_STATE.BORROWER;
-        } else state = USER_STATE.NEW_DEPOSITOR;
-    }
-
     function enter() external payable nonReentrant {
         require(lotteryState == LOTTERY_STATE.OPEN, "Lottery not opened");
 
-        // confirm the msg.sender is nft Owner, borrower, whiteListed user, or new depositor
+        // verify if whitelisted user enters with msg.data
+        if (msg.data.length > 4) {
+            bytes memory encodedProofs = msg.data;
 
-        bytes memory data = msg.data;
-        if (data.length != 0) {
-            uint256 arrayLength = data.length / 32; // Each bytes32 element occupies 32 bytes
-            bytes32[] memory dataArray = new bytes32[](arrayLength);
-
+            bytes32[] memory proofs = new bytes32[](encodedProofs.length / 32);
             assembly {
-                // Load the bytes32 elements from msg.data
+                // Copy the encodedProofs array into the proofs array
+                let offset := add(encodedProofs, 32)
                 for {
                     let i := 0
-                } lt(i, arrayLength) {
+                } lt(i, mload(proofs)) {
                     i := add(i, 1)
                 } {
                     mstore(
-                        add(dataArray, mul(add(i, 1), 32)),
-                        mload(add(data, add(mul(i, 32), 32)))
+                        add(proofs, mul(i, 32)),
+                        mload(add(offset, mul(i, 32)))
                     )
                 }
             }
-            lotteryInfo[lotteryId].whiteListed[
-                msg.sender
-            ] = verifyWhiteListedUser(dataArray, msg.sender);
+            lotteryInfo[lotteryId].whiteListed[msg.sender] = this
+                .verifiedWhiteListedUser(proofs, msg.sender);
         }
 
+        // confirm the msg.sender is nft Owner, borrower, whiteListed user, or new depositor
         USER_STATE state = depositorState(msg.sender);
 
         if (state == USER_STATE.WHITELISTED) {
@@ -222,7 +160,7 @@ contract LotteryV1 is
             ticketsInfo[holderCount] = ticketInfo;
 
             lotteryInfo[lotteryId].amount[msg.sender] = msg.value;
-            // todo mint nft
+
             ticket.mintToken(msg.sender);
             holderCount++;
         }
@@ -253,73 +191,21 @@ contract LotteryV1 is
 
         ticketsInfo[ticketId].borrower = msg.sender;
 
-        //transfer lottery ticket to borrower
-        ticket.transferFrom(ticketsInfo[ticketId].owner, msg.sender, ticketId);
         //mint wrapped ticket
         wTicket.mintToken(msg.sender, ticketId);
 
         payable(ticketsInfo[ticketId].owner).transfer(rentAmount);
     }
 
-    function breakLottery() public onlyOwner {
-        require(
-            lotteryState == LOTTERY_STATE.OPEN &&
-                (block.timestamp >= startTime + DEPOSIT_PERIOD) &&
-                block.timestamp <= (startTime + DEPOSIT_PERIOD + BREAK_PERIOD),
-            "Cannot break lottery"
-        );
-
-        lotteryState = LOTTERY_STATE.CALCULATING_WINNER;
-        requestRandomNumbers();
-    }
-
-    function endLottery() public onlyOwner {
-        require(
-            lotteryState == LOTTERY_STATE.BREAK &&
-                block.timestamp > (startTime + DEPOSIT_PERIOD + BREAK_PERIOD),
-            "Cannot end lottery"
-        );
-
-        lotteryState = LOTTERY_STATE.CLOSE;
-        //burn Wrapped nft, so borrowers cannot win prize anymore and nft owner can claim all
-        for (uint i = 0; i < holderCount; i++) {
-            if (ticketsInfo[i].borrower != address(0)) {
-                uint j = isWinner(ticketsInfo[i].borrower);
-
-                // if borrower is winner, nft owner claim all reward
-                if (j < currentWinnerCount) {
-                    uint256 reward = (lotteryInfo[lotteryId].totalValue *
-                        (100 - feeProtocol)) /
-                        currentWinnerCount /
-                        100;
-                    balanceDepositors[ticketsInfo[i].owner] += reward;
-                }
-
-                //burn wrapped nft
-                wTicket.burnToken(wTicket.wTicketId(ticketsInfo[i].borrower));
-                ticketsInfo[i].borrower = address(0);
-            }
-        }
-    }
-
-    function isWinner(address user) public view returns (uint256) {
-        uint256 i;
-        for (i = 0; i < currentWinnerCount; i++)
-            if (lotteryInfo[lotteryId].winners[i] == user) break;
-
-        return i;
-    }
-
     //Claim rewards for Winner
-    function claim() public nonReentrant {
+    function claim() external nonReentrant {
         USER_STATE state = depositorState(msg.sender);
 
+        require(
+            state != USER_STATE.NEW_DEPOSITOR,
+            "borrower cannot claim if not break period"
+        );
         if (state == USER_STATE.BORROWER) {
-            require(
-                lotteryState == LOTTERY_STATE.BREAK,
-                "borrower cannot claim if not break period"
-            );
-
             uint256 i = isWinner(msg.sender);
             // if borrower is not winner, then revert
             require(i < currentWinnerCount, "borrower but not winner");
@@ -355,6 +241,113 @@ contract LotteryV1 is
             balanceDepositors[msg.sender] = 0;
             payable(msg.sender).transfer(reward);
         }
+    }
+
+    function startLottery() external onlyOwner {
+        require(lotteryState == LOTTERY_STATE.CLOSE, "Cannot start lottery");
+
+        // Update lotteryInfo
+        lotteryState = LOTTERY_STATE.OPEN;
+        lotteryId++;
+        startTime = block.timestamp;
+    }
+
+    function breakLottery() external onlyOwner {
+        require(
+            lotteryState == LOTTERY_STATE.OPEN &&
+                (block.timestamp >= startTime + DEPOSIT_PERIOD) &&
+                block.timestamp <= (startTime + DEPOSIT_PERIOD + BREAK_PERIOD),
+            "Cannot break lottery"
+        );
+
+        lotteryState = LOTTERY_STATE.CALCULATING_WINNER;
+        requestRandomNumbers();
+    }
+
+    function endLottery() external onlyOwner {
+        require(
+            lotteryState == LOTTERY_STATE.BREAK &&
+                block.timestamp > (startTime + DEPOSIT_PERIOD + BREAK_PERIOD),
+            "Cannot end lottery"
+        );
+
+        lotteryState = LOTTERY_STATE.CLOSE;
+        //burn Wrapped nft, so borrowers cannot win prize anymore and nft owner can claim all
+        for (uint i = 0; i < holderCount; i++) {
+            if (ticketsInfo[i].borrower != address(0)) {
+                uint j = isWinner(ticketsInfo[i].borrower);
+
+                // if borrower is winner, nft owner claim all reward
+                if (j < currentWinnerCount) {
+                    uint256 reward = (lotteryInfo[lotteryId].totalValue *
+                        (100 - feeProtocol)) /
+                        currentWinnerCount /
+                        100;
+                    balanceDepositors[ticketsInfo[i].owner] += reward;
+                }
+
+                //burn wrapped nft
+                wTicket.burnToken(wTicket.wTicketId(ticketsInfo[i].borrower));
+                ticketsInfo[i].borrower = address(0);
+            }
+        }
+    }
+
+    function setFeeProtocol(uint256 amount) external onlyOwner {
+        feeProtocol = amount;
+    }
+
+    function setFeeRent(uint256 amount) external onlyOwner {
+        feeRent = amount;
+    }
+
+    function setRentAmount(uint256 amount) external onlyOwner {
+        rentAmount = amount;
+    }
+
+    function setWinnerNumbers(uint256 amount) external onlyOwner {
+        currentWinnerCount = amount;
+    }
+
+    function setTickets(address _ticket, address _wTicket) external onlyOwner {
+        ticket = LotteryTicket(_ticket);
+        wTicket = LotteryWrappedTicket(_wTicket);
+    }
+
+    function verifiedWhiteListedUser(
+        bytes32[] memory proof,
+        address user
+    ) external view onlyOwner returns (bool) {
+        bytes32 leaf = keccak256(abi.encodePacked(user));
+        return MerkleProofUpgradeable.verify(proof, merkleRoot, leaf);
+    }
+
+    function getWinnerAddress(
+        uint _lotteryId
+    ) external view returns (address[] memory) {
+        require(
+            (_lotteryId < lotteryId) ||
+                (_lotteryId == lotteryId &&
+                    lotteryState == LOTTERY_STATE.BREAK),
+            "invalid lottery or cannot get winners after break period"
+        );
+        address[] memory winnerAddress;
+        winnerAddress = new address[](lotteryInfo[_lotteryId].winnerCount);
+        for (uint i = 0; i < lotteryInfo[_lotteryId].winnerCount; i++)
+            winnerAddress[i] = lotteryInfo[lotteryId].winners[i];
+        return winnerAddress;
+    }
+
+    function depositorState(
+        address user
+    ) public view returns (USER_STATE state) {
+        if (lotteryInfo[lotteryId].whiteListed[user]) {
+            state = USER_STATE.WHITELISTED;
+        } else if (ticketsInfo[ticket.ticketId(user)].owner == user) {
+            state = USER_STATE.OWNER;
+        } else if (ticketsInfo[wTicket.ticketId(user)].borrower == user) {
+            state = USER_STATE.BORROWER;
+        } else state = USER_STATE.NEW_DEPOSITOR;
     }
 
     function requestRandomNumbers() internal {
@@ -418,44 +411,13 @@ contract LotteryV1 is
         emit UpdateWinners(lotteryId, winnerAddress);
     }
 
-    function setFeeProtocol(uint256 amount) external onlyOwner {
-        feeProtocol = amount;
+    function isWinner(address user) internal view returns (uint256) {
+        uint256 i;
+        for (i = 0; i < currentWinnerCount; i++)
+            if (lotteryInfo[lotteryId].winners[i] == user) break;
+
+        return i;
     }
 
-    function setFeeRent(uint256 amount) external onlyOwner {
-        feeRent = amount;
-    }
-
-    function setRentAmount(uint256 amount) external onlyOwner {
-        rentAmount = amount;
-    }
-
-    function setWinnerNumbers(uint256 amount) external onlyOwner {
-        currentWinnerCount = amount;
-    }
-
-    function verifyWhiteListedUser(
-        bytes32[] memory proof,
-        address user
-    ) public view onlyOwner returns (bool) {
-        bytes32 leaf = keccak256(abi.encodePacked(user));
-        return MerkleProofUpgradeable.verify(proof, merkleRoot, leaf);
-        // whiteListedUsers.push(user);
-    }
-
-    function getWinnerAddress(
-        uint _lotteryId
-    ) external returns (address[] memory) {
-        require(
-            (_lotteryId < lotteryId) ||
-                (_lotteryId == lotteryId &&
-                    lotteryState == LOTTERY_STATE.BREAK),
-            "invalid lottery or cannot get winners after break period"
-        );
-        address[] memory winnerAddress;
-        winnerAddress = new address[](lotteryInfo[_lotteryId].winnerCount);
-        for (uint i = 0; i < lotteryInfo[_lotteryId].winnerCount; i++)
-            winnerAddress[i] = lotteryInfo[lotteryId].winners[i];
-        return winnerAddress;
-    }
+    function _authorizeUpgrade(address) internal override onlyOwner {}
 }

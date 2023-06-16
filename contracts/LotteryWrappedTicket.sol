@@ -22,14 +22,13 @@ contract LotteryWrappedTicket is ERC721URIStorage {
     */
     function mintToken(address _to, uint _ticketId) external returns (uint256) {
         require(marketAddress == msg.sender, "invalid caller");
-        _tokenIds.increment();
         uint256 newItemId = _tokenIds.current();
 
-        _mint(_to, newItemId);
-
-        // _setApprovalForAll(to, contractAddress, true);
         wTicketId[_to] = newItemId;
         ticketId[_to] = _ticketId;
+        _tokenIds.increment();
+
+        _mint(_to, newItemId);
 
         return newItemId;
     }
