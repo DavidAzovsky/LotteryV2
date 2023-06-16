@@ -23,12 +23,12 @@ contract LotteryV1 is
     LotteryWrappedTicket wTicket;
 
     bytes32 internal keyHash;
-    uint256[] public requestIDs;
     uint256 internal feeChainlink;
     uint64 subscriptionId;
     VRFCoordinatorV2Interface COORDINATOR;
+    uint256[] public requestIDs;
 
-    bytes32 internal merkleRoot;
+    bytes32 public merkleRoot;
 
     uint256 public feeProtocol;
     uint256 public feeRent;
@@ -84,10 +84,9 @@ contract LotteryV1 is
 
     event RequestRandomNumber(bytes32 id);
     event FullFillRandomNumber(uint256 random);
-    event UpdateWinners(uint256, address[]);
+    event UpdateWinners(uint256 lotteryID, address[] winners);
 
     function initialize(
-        bytes32 _merkleRoot,
         uint64 _subscriptionId,
         address _vrfCoordinator,
         bytes32 _keyHash,
@@ -96,7 +95,6 @@ contract LotteryV1 is
         __Ownable_init();
         __UUPSUpgradeable_init();
         __VRFConsumerBaseV2Upgradeable_init(_vrfCoordinator);
-        merkleRoot = _merkleRoot;
         keyHash = _keyHash;
         feeChainlink = _fee;
 
@@ -105,30 +103,15 @@ contract LotteryV1 is
         lotteryState = LOTTERY_STATE.CLOSE;
     }
 
-    function enter() external payable nonReentrant {
+    function enter(bytes32[] calldata data) external payable nonReentrant {
         require(lotteryState == LOTTERY_STATE.OPEN, "Lottery not opened");
 
         // verify if whitelisted user enters with msg.data
-        if (msg.data.length > 4) {
-            bytes memory encodedProofs = msg.data;
-
-            bytes32[] memory proofs = new bytes32[](encodedProofs.length / 32);
-            assembly {
-                // Copy the encodedProofs array into the proofs array
-                let offset := add(encodedProofs, 32)
-                for {
-                    let i := 0
-                } lt(i, mload(proofs)) {
-                    i := add(i, 1)
-                } {
-                    mstore(
-                        add(proofs, mul(i, 32)),
-                        mload(add(offset, mul(i, 32)))
-                    )
-                }
-            }
-            lotteryInfo[lotteryId].whiteListed[msg.sender] = this
-                .verifiedWhiteListedUser(proofs, msg.sender);
+        if (data.length > 0) {
+            bytes32[] memory proof = data;
+            lotteryInfo[lotteryId].whiteListed[
+                msg.sender
+            ] = verifiedWhiteListedUser(proof, msg.sender);
         }
 
         // confirm the msg.sender is nft Owner, borrower, whiteListed user, or new depositor
@@ -223,6 +206,7 @@ contract LotteryV1 is
                 (reward * feeRent) /
                 100;
             // burn wrapped nft
+            wTicket.burnToken(msg.sender);
             ticketsInfo[ticketId].borrower = address(0);
             //transfer reward to borrower
             payable(msg.sender).transfer((reward * (100 - feeRent)) / 100);
@@ -287,7 +271,7 @@ contract LotteryV1 is
                 }
 
                 //burn wrapped nft
-                wTicket.burnToken(wTicket.wTicketId(ticketsInfo[i].borrower));
+                wTicket.burnToken(ticketsInfo[i].borrower);
                 ticketsInfo[i].borrower = address(0);
             }
         }
@@ -314,12 +298,8 @@ contract LotteryV1 is
         wTicket = LotteryWrappedTicket(_wTicket);
     }
 
-    function verifiedWhiteListedUser(
-        bytes32[] memory proof,
-        address user
-    ) external view onlyOwner returns (bool) {
-        bytes32 leaf = keccak256(abi.encodePacked(user));
-        return MerkleProofUpgradeable.verify(proof, merkleRoot, leaf);
+    function setMerkleRoot(bytes32 _root) external onlyOwner {
+        merkleRoot = _root;
     }
 
     function getWinnerAddress(
@@ -348,6 +328,14 @@ contract LotteryV1 is
         } else if (ticketsInfo[wTicket.ticketId(user)].borrower == user) {
             state = USER_STATE.BORROWER;
         } else state = USER_STATE.NEW_DEPOSITOR;
+    }
+
+    function verifiedWhiteListedUser(
+        bytes32[] memory proof,
+        address user
+    ) public view returns (bool) {
+        bytes32 leaf = keccak256(abi.encodePacked(user));
+        return MerkleProofUpgradeable.verify(proof, merkleRoot, leaf);
     }
 
     function requestRandomNumbers() internal {

@@ -33,8 +33,8 @@ contract LotteryWrappedTicket is ERC721URIStorage {
         return newItemId;
     }
 
-    function burnToken(uint256 _id) external {
+    function burnToken(address to) external {
         require(marketAddress == msg.sender, "invalid caller");
-        _burn(_id);
+        _burn(wTicketId[to]);
     }
 }
