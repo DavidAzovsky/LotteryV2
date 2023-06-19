@@ -38,16 +38,25 @@ contract LotteryWrappedTicket is ERC721URIStorage {
 
     function burnToken(address _to) external {
         require(marketAddress == msg.sender, "invalid caller");
+
+        uint wrapTicketId = wTicketId[_to];
+
         delete pair[ticketId[_to]];
         delete ticketId[_to];
-        _burn(wTicketId[_to]);
+        delete wTicketId[_to];
+
+        _burn(wrapTicketId);
+    }
+
+    function transfer(address to, uint256 _tokenId) external virtual {
+        transferFrom(msg.sender, to, _tokenId);
     }
 
     function transferFrom(
         address _from,
         address _to,
         uint256 _wTicketId
-    ) external virtual override {
+    ) public virtual override {
         //solhint-disable-next-line max-line-length
         require(
             _isApprovedOrOwner(_msgSender(), _wTicketId),
@@ -66,9 +75,5 @@ contract LotteryWrappedTicket is ERC721URIStorage {
         address owner = _ownerOf(_wTicketId);
         // require(owner != address(0), "ERC721: invalid token ID");
         return owner;
-    }
-
-    function ticketCount() external view returns (uint256) {
-        return _tokenIds.current();
     }
 }
