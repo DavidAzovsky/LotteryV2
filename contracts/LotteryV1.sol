@@ -34,19 +34,11 @@ contract LotteryV1 is
     uint256 public feeRent;
     uint256 public rentAmount;
     uint256 public currentWinnerCount;
-    address[] public whiteListedUsers;
 
     uint256 public startTime;
 
-    struct TicketInfo {
-        uint256 ticketPrice;
-        address owner;
-        address borrower;
-    }
-
-    //Ticket NFT holders
-    uint256 public holderCount;
-    mapping(uint => TicketInfo) public ticketsInfo;
+    //price of Lottery Ticket
+    mapping(uint => uint) public ticketsPrice;
     mapping(address => uint256) public balanceDepositors;
 
     //LotteryInfo
@@ -75,13 +67,6 @@ contract LotteryV1 is
     }
     LOTTERY_STATE public lotteryState;
 
-    enum USER_STATE {
-        OWNER,
-        BORROWER,
-        WHITELISTED,
-        NEW_DEPOSITOR
-    }
-
     event RequestRandomNumber(bytes32 id);
     event FullFillRandomNumber(uint256 random);
     event UpdateWinners(uint256 lotteryID, address[] winners);
@@ -109,43 +94,32 @@ contract LotteryV1 is
         // verify if whitelisted user enters with msg.data
         if (data.length > 0) {
             bytes32[] memory proof = data;
-            lotteryInfo[lotteryId].whiteListed[
-                msg.sender
-            ] = verifiedWhiteListedUser(proof, msg.sender);
+            if (verifiedWhiteListedUser(proof, msg.sender))
+                lotteryInfo[lotteryId].amount[msg.sender] = 0.5 ether;
         }
-
-        // confirm the msg.sender is nft Owner, borrower, whiteListed user, or new depositor
-        USER_STATE state = depositorState(msg.sender);
-
-        if (state == USER_STATE.WHITELISTED) {
-            lotteryInfo[lotteryId].amount[msg.sender] = 0.5 ether;
-        }
-        if (state == USER_STATE.OWNER) {
+        // If msg.sender is nft Owner, borrower, or new depositor
+        else if (ticket.ticketId(msg.sender) != 0) {
             uint ticketId = ticket.ticketId(msg.sender);
+
             require(
-                ticketsInfo[ticketId].borrower == address(0),
+                wTicket.pair(ticketId) == 0,
                 "Cannot enter, rented to other"
             );
             lotteryInfo[lotteryId].amount[msg.sender] =
                 msg.value +
-                ticketsInfo[ticketId].ticketPrice;
-        }
-        if (state == USER_STATE.BORROWER) {
+                ticketsPrice[ticketId];
+        } else if (wTicket.wTicketId(msg.sender) != 0) {
             uint ticketId = wTicket.ticketId(msg.sender);
             lotteryInfo[lotteryId].amount[msg.sender] =
                 msg.value +
-                ticketsInfo[ticketId].ticketPrice;
-        }
-        if (state == USER_STATE.NEW_DEPOSITOR) {
-            TicketInfo memory ticketInfo;
-            ticketInfo.ticketPrice = msg.value;
-            ticketInfo.owner = msg.sender;
-            ticketsInfo[holderCount] = ticketInfo;
+                ticketsPrice[ticketId];
+        } else {
+            require(msg.value > 0, "Invalid new depositor amount");
 
             lotteryInfo[lotteryId].amount[msg.sender] = msg.value;
 
-            ticket.mintToken(msg.sender);
-            holderCount++;
+            uint ticketId = ticket.mintToken(msg.sender);
+            ticketsPrice[ticketId] = msg.value;
         }
 
         lotteryInfo[lotteryId].depositors[
@@ -160,38 +134,37 @@ contract LotteryV1 is
 
     function rentTicket(uint256 ticketId) external payable nonReentrant {
         require(lotteryState == LOTTERY_STATE.OPEN, "deposit period finished");
-        require(ticketsInfo[ticketId].borrower == address(0), "rent already");
-        require(ticketId < holderCount, "invalid ticketID");
+        require(ticket.ownerOf(ticketId) != msg.sender, "ticketId is it's own");
+        require(wTicket.pair(ticketId) == 0, "rent already");
+        require(
+            ticketId <= ticket.ticketCount() && ticketId > 0,
+            "invalid ticketID"
+        );
 
         for (uint i = 0; i < lotteryInfo[lotteryId].depositCount; i++) {
             if (
-                lotteryInfo[lotteryId].depositors[i] ==
-                ticketsInfo[ticketId].owner
+                lotteryInfo[lotteryId].depositors[i] == ticket.ownerOf(ticketId)
             ) revert("deposited already");
         }
 
         require(msg.value >= rentAmount, "invalid input amount");
-
-        ticketsInfo[ticketId].borrower = msg.sender;
-
         //mint wrapped ticket
         wTicket.mintToken(msg.sender, ticketId);
 
-        payable(ticketsInfo[ticketId].owner).transfer(rentAmount);
+        payable(ticket.ownerOf(ticketId)).transfer(rentAmount);
     }
 
     //Claim rewards for Winner
     function claim() external nonReentrant {
-        USER_STATE state = depositorState(msg.sender);
-
         require(
-            state != USER_STATE.NEW_DEPOSITOR,
+            ticket.ticketId(msg.sender) != 0 ||
+                wTicket.wTicketId(msg.sender) != 0,
             "borrower cannot claim if not break period"
         );
-        if (state == USER_STATE.BORROWER) {
-            uint256 i = isWinner(msg.sender);
+        if (wTicket.wTicketId(msg.sender) != 0) {
+            console.log("borrower");
             // if borrower is not winner, then revert
-            require(i < currentWinnerCount, "borrower but not winner");
+            require(isWinner(msg.sender), "borrower but not winner");
 
             uint ticketId = wTicket.ticketId(msg.sender);
 
@@ -202,25 +175,22 @@ contract LotteryV1 is
                 100;
 
             // add reward to nft owner's reward balance
-            balanceDepositors[ticketsInfo[ticketId].owner] +=
+            balanceDepositors[ticket.ownerOf(ticketId)] +=
                 (reward * feeRent) /
                 100;
             // burn wrapped nft
             wTicket.burnToken(msg.sender);
-            ticketsInfo[ticketId].borrower = address(0);
             //transfer reward to borrower
             payable(msg.sender).transfer((reward * (100 - feeRent)) / 100);
         } else {
             // if nft owner's borrower is winner
+            console.log("owner");
             uint256 ticketId = ticket.ticketId(msg.sender);
-            uint256 i = isWinner(ticketsInfo[ticketId].borrower);
-            if (
-                ticketsInfo[ticketId].borrower != address(0) &&
-                (i < currentWinnerCount) &&
-                lotteryState == LOTTERY_STATE.BREAK
-            ) revert("borrower not claimed, he is winner");
+            address borrower = wTicket.ownerOf(wTicket.pair(ticketId));
+            if (isWinner(borrower) && lotteryState == LOTTERY_STATE.BREAK)
+                revert("borrower not claimed, he is winner");
 
-            ticketsInfo[ticketId].borrower = address(0);
+            if (borrower != address(0)) wTicket.burnToken(borrower);
             uint reward = balanceDepositors[msg.sender];
             balanceDepositors[msg.sender] = 0;
             payable(msg.sender).transfer(reward);
@@ -257,22 +227,20 @@ contract LotteryV1 is
 
         lotteryState = LOTTERY_STATE.CLOSE;
         //burn Wrapped nft, so borrowers cannot win prize anymore and nft owner can claim all
-        for (uint i = 0; i < holderCount; i++) {
-            if (ticketsInfo[i].borrower != address(0)) {
-                uint j = isWinner(ticketsInfo[i].borrower);
-
+        for (uint i = 1; i <= ticket.ticketCount(); i++) {
+            address borrower = wTicket.ownerOf(wTicket.pair(i));
+            if (borrower != address(0)) {
                 // if borrower is winner, nft owner claim all reward
-                if (j < currentWinnerCount) {
+                if (isWinner(borrower)) {
                     uint256 reward = (lotteryInfo[lotteryId].totalValue *
                         (100 - feeProtocol)) /
                         currentWinnerCount /
                         100;
-                    balanceDepositors[ticketsInfo[i].owner] += reward;
+                    balanceDepositors[ticket.ownerOf(i)] += reward;
                 }
 
                 //burn wrapped nft
-                wTicket.burnToken(ticketsInfo[i].borrower);
-                ticketsInfo[i].borrower = address(0);
+                wTicket.burnToken(borrower);
             }
         }
     }
@@ -316,18 +284,6 @@ contract LotteryV1 is
         for (uint i = 0; i < lotteryInfo[_lotteryId].winnerCount; i++)
             winnerAddress[i] = lotteryInfo[lotteryId].winners[i];
         return winnerAddress;
-    }
-
-    function depositorState(
-        address user
-    ) public view returns (USER_STATE state) {
-        if (lotteryInfo[lotteryId].whiteListed[user]) {
-            state = USER_STATE.WHITELISTED;
-        } else if (ticketsInfo[ticket.ticketId(user)].owner == user) {
-            state = USER_STATE.OWNER;
-        } else if (ticketsInfo[wTicket.ticketId(user)].borrower == user) {
-            state = USER_STATE.BORROWER;
-        } else state = USER_STATE.NEW_DEPOSITOR;
     }
 
     function verifiedWhiteListedUser(
@@ -379,8 +335,7 @@ contract LotteryV1 is
             }
 
             //IF not borrower, add reward balance to balanceDepositors
-            USER_STATE user = depositorState(depositors[j]);
-            if (user != USER_STATE.BORROWER)
+            if (wTicket.wTicketId(depositors[j]) == 0)
                 balanceDepositors[depositors[j]] +=
                     (lotteryInfo[lotteryId].totalValue * (100 - feeProtocol)) /
                     currentWinnerCount /
@@ -399,12 +354,14 @@ contract LotteryV1 is
         emit UpdateWinners(lotteryId, winnerAddress);
     }
 
-    function isWinner(address user) internal view returns (uint256) {
+    //Todo change isWinner returns to bool
+    function isWinner(address user) internal view returns (bool) {
         uint256 i;
         for (i = 0; i < currentWinnerCount; i++)
             if (lotteryInfo[lotteryId].winners[i] == user) break;
 
-        return i;
+        if (i < currentWinnerCount) return true;
+        return false;
     }
 
     function _authorizeUpgrade(address) internal override onlyOwner {}
