@@ -92,10 +92,11 @@ contract LotteryV1 is
         require(lotteryState == LOTTERY_STATE.OPEN, "Lottery not opened");
 
         // verify if whitelisted user enters with msg.data
+        LotteryInfo storage curLottery = lotteryInfo[lotteryId];
         if (data.length > 0) {
             bytes32[] memory proof = data;
             if (verifiedWhiteListedUser(proof, msg.sender))
-                lotteryInfo[lotteryId].amount[msg.sender] = 0.5 ether;
+                curLottery.amount[msg.sender] = 0.5 ether;
         }
         // If msg.sender is nft Owner, borrower, or new depositor
         else if (ticket.ticketId(msg.sender) != 0) {
@@ -105,31 +106,23 @@ contract LotteryV1 is
                 wTicket.pair(ticketId) == 0,
                 "Cannot enter, rented to other"
             );
-            lotteryInfo[lotteryId].amount[msg.sender] =
-                msg.value +
-                ticketsPrice[ticketId];
+            curLottery.amount[msg.sender] = msg.value + ticketsPrice[ticketId];
         } else if (wTicket.wTicketId(msg.sender) != 0) {
             uint ticketId = wTicket.ticketId(msg.sender);
-            lotteryInfo[lotteryId].amount[msg.sender] =
-                msg.value +
-                ticketsPrice[ticketId];
+            curLottery.amount[msg.sender] = msg.value + ticketsPrice[ticketId];
         } else {
             require(msg.value > 0, "Invalid new depositor amount");
 
-            lotteryInfo[lotteryId].amount[msg.sender] = msg.value;
+            curLottery.amount[msg.sender] = msg.value;
 
             uint ticketId = ticket.mintToken(msg.sender);
             ticketsPrice[ticketId] = msg.value;
         }
 
-        lotteryInfo[lotteryId].depositors[
-            lotteryInfo[lotteryId].depositCount++
-        ] = msg.sender;
+        curLottery.depositors[curLottery.depositCount++] = msg.sender;
 
-        lotteryInfo[lotteryId].totalAmount += lotteryInfo[lotteryId].amount[
-            msg.sender
-        ];
-        lotteryInfo[lotteryId].totalValue += msg.value;
+        curLottery.totalAmount += curLottery.amount[msg.sender];
+        curLottery.totalValue += msg.value;
     }
 
     function rentTicket(uint256 ticketId) external payable nonReentrant {
@@ -141,10 +134,10 @@ contract LotteryV1 is
             "invalid ticketID"
         );
 
-        for (uint i = 0; i < lotteryInfo[lotteryId].depositCount; i++) {
-            if (
-                lotteryInfo[lotteryId].depositors[i] == ticket.ownerOf(ticketId)
-            ) revert("deposited already");
+        LotteryInfo storage curLottery = lotteryInfo[lotteryId];
+        for (uint i = 0; i < curLottery.depositCount; i++) {
+            if (curLottery.depositors[i] == ticket.ownerOf(ticketId))
+                revert("deposited already");
         }
 
         require(msg.value >= rentAmount, "invalid input amount");
@@ -162,7 +155,6 @@ contract LotteryV1 is
             "borrower cannot claim if not break period"
         );
         if (wTicket.wTicketId(msg.sender) != 0) {
-            console.log("borrower");
             // if borrower is not winner, then revert
             require(isWinner(msg.sender), "borrower but not winner");
 
@@ -184,7 +176,6 @@ contract LotteryV1 is
             payable(msg.sender).transfer((reward * (100 - feeRent)) / 100);
         } else {
             // if nft owner's borrower is winner
-            console.log("owner");
             uint256 ticketId = ticket.ticketId(msg.sender);
             address borrower = wTicket.ownerOf(wTicket.pair(ticketId));
             if (isWinner(borrower) && lotteryState == LOTTERY_STATE.BREAK)
@@ -309,13 +300,14 @@ contract LotteryV1 is
         uint256 requestId,
         uint256[] memory randomWords
     ) internal override {
+        LotteryInfo storage currentLottery = lotteryInfo[lotteryId];
         address[] memory depositors = new address[](
-            lotteryInfo[lotteryId].depositCount
+            currentLottery.depositCount
         );
 
-        uint256 totalWeight = lotteryInfo[lotteryId].totalAmount;
+        uint256 totalWeight = currentLottery.totalAmount;
         for (uint i = 0; i < depositors.length; i++)
-            depositors[i] = lotteryInfo[lotteryId].depositors[i];
+            depositors[i] = currentLottery.depositors[i];
 
         for (uint i = 0; i < currentWinnerCount; i++) {
             uint256 rand = uint256(
@@ -325,10 +317,10 @@ contract LotteryV1 is
             uint256 weightSum = 0;
             uint j;
             for (j = 0; j < depositors.length; j++) {
-                weightSum += lotteryInfo[lotteryId].amount[depositors[j]];
+                weightSum += currentLottery.amount[depositors[j]];
                 if (rand < weightSum) {
-                    lotteryInfo[lotteryId].winners[
-                        lotteryInfo[lotteryId].winnerCount++
+                    currentLottery.winners[
+                        currentLottery.winnerCount++
                     ] = depositors[j];
                     break;
                 }
@@ -337,11 +329,11 @@ contract LotteryV1 is
             //IF not borrower, add reward balance to balanceDepositors
             if (wTicket.wTicketId(depositors[j]) == 0)
                 balanceDepositors[depositors[j]] +=
-                    (lotteryInfo[lotteryId].totalValue * (100 - feeProtocol)) /
+                    (currentLottery.totalValue * (100 - feeProtocol)) /
                     currentWinnerCount /
                     100;
 
-            totalWeight -= lotteryInfo[lotteryId].amount[depositors[j]];
+            totalWeight -= currentLottery.amount[depositors[j]];
             delete depositors[j];
         }
         lotteryState = LOTTERY_STATE.BREAK;
@@ -349,7 +341,7 @@ contract LotteryV1 is
         // emit UpdateWinners event
         address[] memory winnerAddress = new address[](currentWinnerCount);
         for (uint i = 0; i < currentWinnerCount; i++)
-            winnerAddress[i] = lotteryInfo[lotteryId].winners[i];
+            winnerAddress[i] = currentLottery.winners[i];
 
         emit UpdateWinners(lotteryId, winnerAddress);
     }

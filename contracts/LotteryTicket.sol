@@ -32,18 +32,21 @@ contract LotteryTicket is ERC721URIStorage {
         return newItemId;
     }
 
+    function transfer(address to, uint256 _tokenId) external virtual {
+        transferFrom(msg.sender, to, _tokenId);
+    }
+
     function transferFrom(
         address _from,
         address _to,
         uint256 _tokenId
-    ) external virtual override {
+    ) public virtual override {
         //solhint-disable-next-line max-line-length
         require(
             _isApprovedOrOwner(_msgSender(), _tokenId),
             "ERC721: caller is not token owner or approved"
         );
         ticketId[_to] = _tokenId;
-        delete ticketId[_from];
         _transfer(_from, _to, _tokenId);
     }
 
