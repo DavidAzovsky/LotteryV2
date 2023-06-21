@@ -97,6 +97,7 @@ contract LotteryV1 is
             bytes32[] memory proof = data;
             if (verifiedWhiteListedUser(proof, msg.sender))
                 curLottery.amount[msg.sender] = 0.5 ether;
+            if (msg.value > 0) payable(msg.sender).transfer(msg.value);
         }
         // If msg.sender is nft Owner, borrower, or new depositor
         else if (ticket.ticketId(msg.sender) != 0) {
@@ -144,6 +145,8 @@ contract LotteryV1 is
         //mint wrapped ticket
         wTicket.mintToken(msg.sender, ticketId);
 
+        if (msg.value > rentAmount)
+            payable(msg.sender).transfer(msg.value - rentAmount);
         payable(ticket.ownerOf(ticketId)).transfer(rentAmount);
     }
 
